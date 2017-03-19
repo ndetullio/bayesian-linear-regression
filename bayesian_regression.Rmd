@@ -104,10 +104,7 @@ p3 <- ggplot(movies, aes(x=factor(thtr_rel_month), y=audience_score)) +
   geom_boxplot(fill = "cyan1", outlier.size = 0) + geom_jitter(width = 0.2, size = 0.3, colour = "gray18") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("Theatre release month") + ylab("Audience score")
 
-grid.arrange(p1, p2, p3, ncol=1)
-
-# Free up RAM
-invisible(gc())
+grid.arrange(p1, p2, p3, ncol=1); invisible(gc()) # Free up RAM
 ```
 
 On average, the movies with highest `audience_score` are `Documentary`, followed by `Musical & Performing Arts` and `Drama`, which is the most reppresented genre in the data set. The high scores recorded for genres `Documentary` and `Musical & Performing Arts` may be due to the fact that these are very specific genres and only a limited number of high quality documentaries and musicals have ever been produced. On the other hand, a large number of movies fall into the `drama` category, hence the variability in quality is much greater. The second figure shows that unrated movies tend to have the highest scores, followed by movies with MPAA rating "G"", while the majority of the movies in the data set have MPAA rating "R". By analysing the last of the three figures above it is possible to see that movies are released rather homogeneoulsy throughout the year and there is not a clear indication that movies socres may be affected by their release month.  
@@ -311,6 +308,7 @@ predict(BPM_mov_nout_poly.lm, newdata = Magnificent7, interval = "confidence")
 ```
 
 All of the predictions are very close to the real value. However, it is clearly not possible to draw any conclusions regarding the prediction ability of the models from only one prediction. Nevertheless, it is interesting to note that out preferred model (`BPM_mov_nout_poly.lm`) gives the most accurate prediction for this particular movie.
+
 * * *
 
 ## References
