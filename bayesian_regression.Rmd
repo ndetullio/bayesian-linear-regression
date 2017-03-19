@@ -1,0 +1,316 @@
+---
+title: "Bayesian modeling and prediction for movies"
+output: 
+  html_document: 
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+    
+references:
+- id: IMDB_Magnificent7
+  title:  IMDB review of The Magnificent 7
+  URL: 'http://www.imdb.com/title/tt2404435/'
+  issued:
+    year: 2017
+    
+- id: RT_Magnificent7
+  title:  Rotten Tomatoes review of The Magnificent 7
+  URL: 'https://www.rottentomatoes.com/m/the_magnificent_seven_2016/'
+  issued:
+    year: 2017
+---
+
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(moments)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+library(psych)
+library(statsr)
+library(BAS)
+```
+
+### Load data
+
+```{r load-data}
+load("movies.Rdata")
+```
+
+* * *
+
+## Data
+
+The study was carried out using a relatively small sample of randomly selected movies. It is an observational study, where movies scores where given by people who voluntarily (audience) or by profession (critics) rate movies online at "Rotten Tomatoes" and "IMDB". The small sample size and the lack of random selection of the people rating the movies (random assignment) make the generalisation of the results to the whole of the population of people who like watching movies difficult. Therefore care must be taken when interpreting the results of the study. 
+
+* * *
+
+## Data manipulation
+
+Here we will create the additional variables specified in the project description. For consistency with the rest of the data, we will use "yes" and "no" instead of "TRUE" and "FALSE" for boolean variables.
+
+* `feature_film`  :   "yes" if the movie is a feature film, "no" otherwise.
+* `drama`         :   "yes" if the movie's genre is "drama", "no" otherwise.
+* `mpaa_rating_R` :   "yes" if the movie was rates as "R" by MPAA, "no" otherwise.
+* `oscar_season`  :   "yes" if the movie was released in the oscar season, "no" otherwise.
+* `summer_season` :   "yes" if the movie was released in the summer season, "no" otherwise.
+
+```{r create new variables}
+
+# Generate additional variables
+movies <- movies %>% mutate(feature_film = ifelse(title_type == "Feature Film", "yes", "no"))
+movies <- movies %>% mutate(drama = ifelse(genre == "Drama", "yes", "no"))
+movies <- movies %>% mutate(mpaa_rating_R = ifelse(mpaa_rating == "R", "yes", "no"))
+movies <- movies %>% mutate(oscar_season = ifelse(thtr_rel_month %in% c(10,11,12), "yes", "no"))
+movies <- movies %>% mutate(summer_season = ifelse(thtr_rel_month %in% c(5,6,7,8), "yes", "no"))
+
+```
+
+* * *
+
+## Exploratory data analysis
+
+We will start the exploratory analysis by looking at how `audience_score` is correlated with `imdb_rating` and `critics_score`. The figures below show this relationships, where we have added a smoothed regression line, with the associated $95 \%$ confidence interval as a shaded gray band, for ease of interpretation. 
+
+```{r exploration_1, fig.width=8, fig.height=3.5, fig.align="center"}
+p1 <- qplot(imdb_rating, audience_score, data=movies, size=I(1.0)) +
+      geom_smooth(method = "loess", colour = "cyan1") +
+      xlab("IMDB rating") + ylab("audience score") 
+
+p2 <- qplot(critics_score, audience_score, data=movies, size=I(1.0)) +
+      geom_smooth(method = "loess", colour = "cyan1") +
+      xlab("critics score") + ylab("audience score") 
+
+grid.arrange(p1, p2, ncol=2)
+
+```
+
+It can be seen that there is a strong, nonlinear correlation between `audience_score` and `IMDB rating` and a weaker, roughly linear correlation between `audience_score` and `critics_score`. The correlations spotted in the figures above do not imply causation, but can be exploited when developing a linear regression model. In addition to correlations between numerical predictor variables and `audience_score`, it is also of interest to understand how the latter is affected by categorical variables. The figures below show boxplots of `audience_score` for the different genres, MPAA ratings and theathre release months, where the black dots give a visual indication of the number of movies in each category.
+
+```{r exploration_2, fig.width=7, fig.height=8, fig.align="center"}
+p1 <- ggplot(movies, aes(x=factor(genre), y=audience_score)) +
+  geom_boxplot(fill = "cyan1", outlier.size = 0) + geom_jitter(width = 0.2, size = 0.3, colour = "gray18") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("Movie genre") + ylab("Audience score")
+
+p2 <- ggplot(movies, aes(x=factor(mpaa_rating), y=audience_score)) +
+  geom_boxplot(fill = "cyan1", outlier.size = 0) + geom_jitter(width = 0.2, size = 0.3, colour = "gray18") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("MPAA rating") + ylab("Audience score")
+
+p3 <- ggplot(movies, aes(x=factor(thtr_rel_month), y=audience_score)) +
+  geom_boxplot(fill = "cyan1", outlier.size = 0) + geom_jitter(width = 0.2, size = 0.3, colour = "gray18") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + xlab("Theatre release month") + ylab("Audience score")
+
+grid.arrange(p1, p2, p3, ncol=1)
+
+# Free up RAM
+invisible(gc())
+```
+
+On average, the movies with highest `audience_score` are `Documentary`, followed by `Musical & Performing Arts` and `Drama`, which is the most reppresented genre in the data set. The high scores recorded for genres `Documentary` and `Musical & Performing Arts` may be due to the fact that these are very specific genres and only a limited number of high quality documentaries and musicals have ever been produced. On the other hand, a large number of movies fall into the `drama` category, hence the variability in quality is much greater. The second figure shows that unrated movies tend to have the highest scores, followed by movies with MPAA rating "G"", while the majority of the movies in the data set have MPAA rating "R". By analysing the last of the three figures above it is possible to see that movies are released rather homogeneoulsy throughout the year and there is not a clear indication that movies socres may be affected by their release month.  
+
+* * *
+
+## Modelling
+
+Having explored the data set we will now work on the development of a Bayesian linear regression model. We will start by creating a reduced data frame with the following variables:
+
+* `feature_film`
+* `drama`
+* `runtime`
+* `mpaa_rating_R`
+* `thtr_rel_year`
+* `oscar_season`
+* `summer_season`
+* `imdb_rating`
+* `imdb_num_votes`
+* `critics_score`
+* `best_pic_nom`
+* `best_pic_win`
+* `best_actor_win`
+* `best_actress_win`
+* `best_dir_win`
+* `top200_box`
+
+```{r select reduced model}
+selection = c("audience_score", "feature_film", "drama", "runtime", "mpaa_rating_R", "thtr_rel_year", "oscar_season",
+              "summer_season", "imdb_rating", "imdb_num_votes", "critics_score", "best_pic_nom",
+              "best_pic_win", "best_actor_win", "best_actress_win","best_dir_win", "top200_box")
+
+# We will omit NAs from our analysis
+movies_red <- na.omit(movies[selection])
+```
+
+We will now use this reduced data frame to perform a Bayesian regression analysis for `audience_score`, using the the `BAS` R package with a BIC prior on the coefficients and a uniform model prior.
+
+```{r Bayesian regression model}
+bma_movies = bas.lm(audience_score ~ ., data = movies_red,
+                    prior = "BIC", 
+                    modelprior = uniform())
+```
+
+A summary of the model is given below:
+
+```{r model summary, fig.width=6, fig.height=4, fig.align="center"}
+# Write out model summary
+summary(bma_movies)
+```
+
+As can be seen, the two most probable models have very similar posterior probabilities (0.1297 and 0.1293) and include `runtime`, `imdb_rating` and `critics_score`, and just `imdb_rating` and `critics_score`, respectively. By looking at the plot of the residuals against `audience_score` predictions under BMA,
+
+```{r plot residuals vs predictions under BMA}
+# Plot model 
+par(mfrow = c(1, 1))
+plot(bma_movies, which = 1); invisible(gc()) # Free up RAM
+```
+
+we can see that variance is not constant (it is smaller for high `audience_score`) and there is a distinctive pattern in the plot. Although not very pronounced, the pattern suggests that there is a nonlinear relationship that is not taken into account in the model. We have already seen in "Part 3" that `audience_score` and `imdb_rating` are nonlinearly correlated, which may well be the cause for the pattern observed in the residuals plot. We will investigate this further later, for now we also note that the residuals plot is also flagging three possible outliers. In order to spot outliers we add an indicator variable for each of the observations and build a Bayesian regression model using again the BIC prior on the coefficients and a truncated beta binomial that assigns zero prior probability to models of more than 10 coefficients. Since the number of possible models is now huge, we will use Markov-Chain-Monta-Carlo (MCMC) iterations. Note that the `initprobs="marg-eplogp"` argument provides a way to order the variables and initialise MCMC to make the algorithm more efficient.
+
+```{r check for outliers}
+set.seed(10)
+n = nrow(movies_red)
+# Add indicator variables
+movies_outliers = cbind(movies_red, diag(1, nrow=n))
+# Build model
+outliers_movies = bas.lm(audience_score ~ ., data=movies_outliers, 
+                         prior= "BIC",
+                         modelprior=tr.beta.binomial(a=1, b=1, trunc=10),
+                         method="MCMC",
+                         initprobs="marg-eplogp",
+                         MCMC.iterations=2*10^6
+                        )
+```
+
+Now, finding an indicator variable with a high marginal inclusion probability would suggest that the corresponding observation belongs to a population with a different mean than what is expected from the regression model. A look at the diagnostics plot,
+
+```{r outliers diagnostic, fig.width=5, fig.height=4, fig.align="center"}
+diagnostics(outliers_movies, type="pip"); invisible(gc()) # Free up RAM
+```
+
+suggests that the MCMC routine has converged. We can now proceed to spot any potential outliers by checking for variables with high marginal posterior probability. Here, we will choose $pip = 0.5$.
+
+```{r potential outliers}
+outliers_movies$namesx[outliers_movies$probne0 > .5]
+
+```
+
+We can see that observations `126`, `216` and `251` are potential outliers. However, further analysis is in order before deciding to delete them from the data frame. 
+
+```{r outlier table, fig.width=10, fig.height=4, fig.align="center"}
+grid.table(movies[c(126,216,251),c("title","audience_score","imdb_rating","critics_score","imdb_num_votes","genre","studio")])
+```
+
+The table above shows that the three movies flagged as outliers have in common that `Rotten Tomatoes` scores (audience_score) are considerably higher than both `IMDB` and critics scores. These three movies are all of genre `Comedy` (note that `Madea Goes to Jail` is actually a `Comedy`, despite being classified as `Drama` in the data frame), have a low number of `IMDB` votes and are produced by small, independent studios. It is reasonable to think that these three movies belong to a niche market of low quality, funny movies, that may appeal to a relatively low number of consumers. For the above reasons these three movies will be excluded from the analysis.
+
+```{r model without outliers}
+movies_red_nout <- movies_red[-c(126, 216, 251), ]
+bma_movies_nout = bas.lm(audience_score ~ ., data = movies_red_nout,
+                   prior = "BIC", 
+                   modelprior = uniform())
+```
+
+A summary of the new model,
+```{r summary model without outliers}
+summary(bma_movies_nout)
+```
+
+shows that model, while the first and second most probable models have not changed, the difference in posterior probabilities between the first and the second model is now much greater than for the original data frame.
+
+Going back to the nonlinear relationship between `audience_score` and `imdb_rating`, we will now try to improve the linear model by introducing polynomial features in our multiple regression analysis. For this purpose we build a model without `imdb_rating` and add orthogonal polynomials of `imdb_rating` up to the 3rd degree using the `R` function `poly`.
+
+```{r add polynomial features}
+bma_movies_nout_poly = bas.lm(audience_score ~ . -imdb_rating + poly(imdb_rating,3), data = movies_red_nout,
+                    prior = "BIC", 
+                    modelprior = uniform()); invisible(gc()) # Free up RAM
+```
+
+The model summary given below,
+```{r model summary for polynomial features, fig.width=6, fig.height=4, fig.align="center"}
+# Write out model summary
+summary(bma_movies_nout_poly)
+```
+
+shows that the most probable model has a higher posterior probability of 0.1815, and includes `runtime`, `thtr_rel_year`, `poly(imdb_rating, 3)1` (scaled version of `imdb_rating`), `poly(imdb_rating, 3)2` and `poly(imdb_rating, 3)3`. The second most probable model, which does not include `thtr_rel_year`, also has a relatively high posterior probability of 0.1328. It is also worth noting that all the most probable models include all the poynomial features introduced. We can now have a look at the residuals plot to see how this is affected by the introduction of the polynomial features.
+
+```{r plot residuals vs predictions under BMA for polynomial features}
+# Plot model 
+par(mfrow = c(1, 1))
+plot(bma_movies_nout_poly, which = 1); invisible(gc()) # Free up RAM
+```
+
+We can see that now variance is more uniform and that the distinctive pattern observed previously is now much more subtle. 
+
+To end the modeling part of the analysis, we will extract the `Best Prediction Model` (BPM) from all the `bma` objects created, i.e `bma_movies` (bma object for original data), `bma_movies_nout` (bma object for original data without outliers) and `bma_movies_nout_poly` (bma object for original data without outliers and with polynomial features), and build linear regression models using the `lm` function in `R`.
+
+```{r model selection under BMA}
+#Model selection under BMA, using BPM estimator
+BMApred_nout_poly <- predict(bma_movies_nout_poly, estimator="BPM"); invisible(gc()) #Free up RAM
+BMApred_nout <- predict(bma_movies_nout, estimator="BPM"); invisible(gc()) #Free up RAM
+BMApred <- predict(bma_movies, estimator="BPM"); invisible(gc()) #Free up RAM
+
+# Generate variables names for BPM model
+BPM_modelvars_nout_poly <- gsub("yes","", paste(as.vector(bma_movies_nout_poly$namesx[BMApred_nout_poly$bestmodel[-1]+1]),collapse ="+"))
+BPM_modelvars_nout <- gsub("yes","", paste(as.vector(bma_movies_nout$namesx[BMApred_nout$bestmodel[-1]+1]),collapse ="+"))
+BPM_modelvars <- gsub("yes","", paste(as.vector(bma_movies$namesx[BMApred_nout$bestmodel[-1]+1]),collapse ="+"))
+
+# Generate BPM model functions
+BPM_modelfun_nout_poly <- paste("audience_score ~ ",BPM_modelvars_nout_poly,sep = "")
+BPM_modelfun_nout <- paste("audience_score ~ ",BPM_modelvars_nout,sep = "")
+BPM_modelfun <- paste("audience_score ~ ",BPM_modelvars,sep = "")
+
+#Build BPM models
+BPM_mov_nout_poly.lm = lm(audience_score ~ thtr_rel_year+poly(imdb_rating,3), data = movies_red_nout)
+BPM_mov_nout.lm = lm(BPM_modelfun_nout, data = movies_red_nout)
+BPM_mov.lm = lm(BPM_modelfun, data = movies_red); invisible(gc()) # Free up RAM
+```
+
+As a metric for evaluation of the different models we use the `adjusted R-squared`: 
+
+```{r Models adjusted R-squared}
+summary(BPM_mov.lm)$adj.r.squared
+summary(BPM_mov_nout.lm)$adj.r.squared
+summary(BPM_mov_nout_poly.lm)$adj.r.squared
+```
+
+We can see that dropping the observations flagged as outliers leads to a 4% increase in `adjusted R-squared` and adding polynomial features accounts for an additional 4% increase. Model `BPM_mov_nout_poly.lm` explains in excess of 81% of the variance in the data and is the best of the three models.   
+
+* * *
+
+## Part 5: Prediction
+
+For a thorough evaluation of the regression models one would need a test set of new movies with known `audience_score`. However, here we will restrict ourselves to the prediction of just one new movies (`The Magnificent 7`) for illustration purposes.  
+
+```{r new data}
+Magnificent7 <- data.frame(feature_film="yes",
+                       drama="no",
+                       runtime=133,
+                       mpaa_rating_R="no",
+                       thtr_rel_year=2016,
+                       oscar_season="no",
+                       summer_season="no",
+                       imdb_rating=7.0,
+                       imdb_num_votes=110246,
+                       critics_score=63,
+                       best_pic_nom="no",
+                       best_pic_win="no",
+                       best_actor_win="no",
+                       best_actress_win="no",
+                       best_dir_win="no",
+                       top200_box="yes")
+```
+
+The features for the new movie were extracted from the `IMDB` web page [@IMDB_Magnificent7]. The current `audience_score` for the movie on `Rotten Tomatoes` is 73% [@RT_Magnificent7]. Our models predict:
+
+```{r BPM predictions}
+predict(BPM_mov.lm, newdata = Magnificent7, interval = "confidence")
+predict(BPM_mov_nout.lm, newdata = Magnificent7, interval = "confidence")
+predict(BPM_mov_nout_poly.lm, newdata = Magnificent7, interval = "confidence")
+```
+
+All of the predictions are very close to the real value. However, it is clearly not possible to draw any conclusions regarding the prediction ability of the models from only one prediction. Nevertheless, it is interesting to note that out preferred model (`BPM_mov_nout_poly.lm`) gives the most accurate prediction for this particular movie.
+* * *
+
+## References
